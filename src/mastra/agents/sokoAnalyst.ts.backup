@@ -1,0 +1,659 @@
+import "dotenv/config";
+import { openai } from "@ai-sdk/openai";
+import { createOllama } from "ollama-ai-provider-v2";
+import { Agent } from "@mastra/core/agent";
+import {
+  marketDataTool,
+  technicalAnalysisTool,
+  marketSentimentTool,
+  advancedMarketAnalysisTool,
+  blockchainAnalyticsTool,
+  riskManagementTool,
+  globalMarketsMonitorTool,
+  mcpMarketDataTool,
+  mcpMarketNewsTool,
+  mcpEconomicIndicatorsTool,
+} from "@/mastra/tools/financial";
+import { Tool } from "@mastra/core/tools";
+import { LibSQLStore } from "@mastra/libsql";
+import { z } from "zod";
+import { Memory } from "@mastra/memory";
+
+export const SokoAnalystState = z.object({
+  watchlist: z
+    .array(
+      z.object({
+        symbol: z.string(),
+        market: z.string(),
+        addedAt: z.number(),
+      }),
+    )
+    .default([]),
+  alerts: z
+    .array(
+      z.object({
+        id: z.string(),
+        symbol: z.string(),
+        condition: z.string(),
+        value: z.number(),
+        triggered: z.boolean(),
+        createdAt: z.number(),
+      }),
+    )
+    .default([]),
+  portfolios: z
+    .array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        holdings: z.array(
+          z.object({
+            symbol: z.string(),
+            quantity: z.number(),
+            avgCost: z.number(),
+          }),
+        ),
+        createdAt: z.number(),
+      }),
+    )
+    .default([]),
+  marketInsights: z
+    .array(
+      z.object({
+        id: z.string(),
+        title: z.string(),
+        content: z.string(),
+        severity: z.enum(["low", "medium", "high"]),
+        timestamp: z.number(),
+      }),
+    )
+    .default([]),
+});
+
+// Response schema for structured analysis output
+export const AnalysisResponseSchema = z.object({
+  summary: z.string().describe("Executive summary of the analysis"),
+  keyInsights: z.array(z.string()).describe("Key insights and findings"),
+  marketData: z
+    .object({
+      symbols: z.array(z.string()),
+      prices: z.record(z.number()),
+      changes: z.record(z.number()),
+      analysis: z.string(),
+    })
+    .optional()
+    .describe("Market data analysis if tools were used"),
+  recommendations: z
+    .array(
+      z.object({
+        action: z.string().describe("Recommended action"),
+        rationale: z.string().describe("Reasoning behind the recommendation"),
+        riskLevel: z
+          .enum(["low", "medium", "high"])
+          .describe("Risk assessment"),
+        timeframe: z.string().describe("Recommended timeframe"),
+      }),
+    )
+    .describe("Actionable recommendations"),
+  riskAssessment: z
+    .object({
+      overallRisk: z.enum(["low", "medium", "high"]),
+      keyRisks: z.array(z.string()),
+      mitigationStrategies: z.array(z.string()),
+    })
+    .describe("Risk analysis and mitigation"),
+  confidence: z
+    .enum(["low", "medium", "high"])
+    .describe("Confidence level in analysis"),
+  timestamp: z.number().describe("Analysis timestamp"),
+});
+
+// Configure model with fallback
+const ollama = createOllama({
+  baseURL:
+    process.env.NOS_OLLAMA_API_URL ||
+    process.env.OLLAMA_API_URL ||
+    "http://localhost:11434/api",
+});
+
+// Determine which model to use
+const getModel = () => {
+  // Check if we should use OpenAI (if OPENAI_API_KEY is set and no Ollama URL)
+  if (
+    process.env.OPENAI_API_KEY &&
+    !process.env.NOS_OLLAMA_API_URL &&
+    !process.env.OLLAMA_API_URL
+  ) {
+    console.log("🤖 Using OpenAI GPT-4o for SokoAnalyst");
+    return openai("gpt-4o");
+  }
+
+  // Use Ollama
+  const modelName =
+    process.env.NOS_MODEL_NAME_AT_ENDPOINT ||
+    process.env.MODEL_NAME_AT_ENDPOINT ||
+    "qwen3:8b"; // Match the available model on Nosana endpoint
+  console.log(`🤖 Using Ollama model: ${modelName}`);
+  return ollama(modelName);
+};
+
+// Enhanced Perplexity tools with reasoning capabilities
+const perplexityReasoningTool = new Tool({
+  id: "perplexity_reasoning_analysis",
+  description:
+    "Perform advanced financial analysis using Perplexity Sonar-Reasoning for institutional-grade insights",
+  inputSchema: z.object({
+    symbols: z.array(z.string()).describe("Financial symbols to analyze"),
+    analysisType: z
+      .enum(["technical", "fundamental", "sentiment", "comprehensive"])
+      .default("comprehensive")
+      .describe("Type of analysis to perform"),
+  }),
+  outputSchema: z.object({
+    symbols: z.array(z.string()),
+    analysisType: z.string(),
+    success: z.boolean(),
+    content: z.string().describe("Detailed analysis content"),
+    model: z.string(),
+    timestamp: z.number(),
+    summary: z.string().describe("Executive summary"),
+    citations: z.array(z.string()).optional(),
+    usage: z
+      .object({
+        total_tokens: z.number(),
+      })
+      .optional(),
+    error: z.string().optional(),
+  }),
+  execute: async (context) => {
+    try {
+      const { symbols, analysisType } = context.context || context;
+      console.log(
+        `🧠 Executing Perplexity reasoning analysis for ${symbols.join(", ")} - ${analysisType}`,
+      );
+
+      const { analyzeMarketWithReasoning } = await import(
+        "../../lib/perplexity"
+      );
+      const result = await analyzeMarketWithReasoning(symbols, analysisType);
+
+      console.log(
+        `✅ Perplexity reasoning analysis completed - ${result.content.length} chars`,
+      );
+
+      return {
+        symbols,
+        analysisType,
+        success: true,
+        content: result.content,
+        model: result.model,
+        timestamp: Date.now(),
+        summary: `Completed ${analysisType} analysis for ${symbols.join(", ")} using AI reasoning`,
+        citations: result.citations,
+        usage: result.usage,
+      };
+    } catch (error) {
+      console.error("❌ Perplexity reasoning analysis failed:", error);
+      const symbols =
+        (context.context as any)?.symbols || (context as any).symbols || [];
+      const analysisType =
+        (context.context as any)?.analysisType ||
+        (context as any).analysisType ||
+        "comprehensive";
+      return {
+        symbols,
+        analysisType,
+        success: false,
+        content: "Analysis failed due to an error",
+        model: "error",
+        timestamp: Date.now(),
+        summary: "Analysis could not be completed",
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  },
+});
+
+const marketIntelligenceTool = new Tool({
+  id: "market_intelligence",
+  description: "Get comprehensive market intelligence with contextual analysis",
+  inputSchema: z.object({
+    query: z.string().describe("Market intelligence query"),
+    context: z
+      .enum(["trading", "investment", "risk_management", "research"])
+      .default("research")
+      .describe("Analysis context"),
+  }),
+  execute: async (context) => {
+    try {
+      const { query, context: analysisContext } = context.context || context;
+      console.log(
+        `🎯 Executing market intelligence query: ${query} - Context: ${analysisContext}`,
+      );
+
+      const { getMarketIntelligence } = await import("../../lib/perplexity");
+      const result = await getMarketIntelligence(query, analysisContext);
+
+      console.log(
+        `✅ Market intelligence completed - ${result.content.length} chars`,
+      );
+
+      return {
+        success: true,
+        query,
+        context: analysisContext,
+        content: result.content,
+        model: result.model,
+        citations: result.citations,
+        usage: result.usage,
+        timestamp: Date.now(),
+        summary: `Market intelligence analysis completed for: ${query}`,
+      };
+    } catch (error) {
+      console.error("❌ Market intelligence failed:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+        query: (context.context as any)?.query || (context as any).query,
+        context: (context.context as any)?.context || (context as any).context,
+      };
+    }
+  },
+});
+
+const watchlistManagementTool = new Tool({
+  id: "watchlist_management",
+  description:
+    "Manage user's watchlist by adding or removing symbols based on analysis recommendations",
+  inputSchema: z.object({
+    action: z
+      .enum(["add", "remove", "update"])
+      .describe("Action to perform on watchlist"),
+    symbols: z
+      .array(
+        z.object({
+          symbol: z.string().describe("Stock/crypto symbol"),
+          market: z
+            .string()
+            .describe("Market type (stocks, crypto, forex, commodities)"),
+          reason: z.string().describe("Reason for adding/removing this symbol"),
+          priority: z
+            .enum(["high", "medium", "low"])
+            .default("medium")
+            .describe("Priority level"),
+          targetPrice: z
+            .number()
+            .optional()
+            .describe("Target price for the symbol"),
+          stopLoss: z.number().optional().describe("Stop loss price"),
+        }),
+      )
+      .describe("Symbols to add/remove with details"),
+    analysis: z
+      .string()
+      .optional()
+      .describe("Brief analysis summary for the watchlist update"),
+  }),
+  execute: async (context) => {
+    try {
+      const { action, symbols, analysis } = context.context || context;
+      console.log(
+        `📋 Executing watchlist ${action} for ${symbols.length} symbols`,
+      );
+
+      return {
+        success: true,
+        action,
+        symbols,
+        analysis,
+        timestamp: Date.now(),
+        updatedCount: symbols.length,
+        watchlistUpdate: {
+          action,
+          symbols: symbols.map((s: any) => ({
+            symbol: s.symbol,
+            market: s.market,
+            reason: s.reason,
+            priority: s.priority,
+            targetPrice: s.targetPrice,
+            stopLoss: s.stopLoss,
+            addedAt: Date.now(),
+          })),
+          analysis,
+        },
+        summary: `${action === "add" ? "Added" : action === "remove" ? "Removed" : "Updated"} ${symbols.length} symbol${symbols.length > 1 ? "s" : ""} ${action === "add" ? "to" : action === "remove" ? "from" : "in"} watchlist`,
+      };
+    } catch (error) {
+      console.error("❌ Watchlist management failed:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+        action: (context.context as any)?.action || (context as any).action,
+        symbols: (context.context as any)?.symbols || (context as any).symbols,
+      };
+    }
+  },
+});
+
+const web3PerpetualsAnalysisTool = new Tool({
+  id: "web3_perpetuals_analysis",
+  description:
+    "Analyze Web3 perpetual futures markets, DeFi protocols, and decentralized derivatives",
+  inputSchema: z.object({
+    protocols: z
+      .array(z.string())
+      .describe(
+        "DeFi protocols to analyze (e.g., dYdX, GMX, Perpetual Protocol)",
+      ),
+    assets: z
+      .array(z.string())
+      .describe("Crypto assets for perpetuals analysis"),
+    analysisType: z
+      .enum([
+        "funding_rates",
+        "open_interest",
+        "liquidations",
+        "protocol_comparison",
+        "comprehensive",
+      ])
+      .default("comprehensive")
+      .describe("Type of perpetuals analysis"),
+    timeframe: z
+      .enum(["1h", "4h", "1d", "7d", "30d"])
+      .default("1d")
+      .describe("Analysis timeframe"),
+  }),
+  execute: async (context) => {
+    try {
+      const { protocols, assets, analysisType, timeframe } =
+        context.context || context;
+      console.log(
+        `🌐 Executing Web3 perpetuals analysis for ${protocols.join(", ")} - ${analysisType}`,
+      );
+
+      // Use Perplexity for real-time Web3 data
+      const { getMarketIntelligence } = await import("@/lib/perplexity");
+      const query = `Analyze Web3 perpetual futures markets for ${protocols.join(", ")} protocols and ${assets.join(", ")} assets. Focus on ${analysisType} analysis over ${timeframe} timeframe. Include funding rates, open interest, liquidation data, protocol TVL, and trading volumes. Assess decentralized derivatives market trends and opportunities.`;
+
+      const result = await getMarketIntelligence(query, "research");
+
+      console.log(
+        `✅ Web3 perpetuals analysis completed - ${result.content.length} chars`,
+      );
+
+      return {
+        success: true,
+        protocols,
+        assets,
+        analysisType,
+        timeframe,
+        content: result.content,
+        model: result.model,
+        citations: result.citations,
+        usage: result.usage,
+        timestamp: Date.now(),
+        perpetualsData: generateMockPerpetualsData(protocols, assets),
+        summary: `Web3 perpetuals analysis completed for ${protocols.length} protocol${protocols.length > 1 ? "s" : ""} and ${assets.length} asset${assets.length > 1 ? "s" : ""}`,
+      };
+    } catch (error) {
+      console.error("❌ Web3 perpetuals analysis failed:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+        protocols:
+          (context.context as any)?.protocols || (context as any).protocols,
+        assets: (context.context as any)?.assets || (context as any).assets,
+      };
+    }
+  },
+});
+
+const locationBasedMarketAnalysisTool = new Tool({
+  id: "location_based_market_analysis",
+  description:
+    "Analyze markets based on geographic location, regional trends, and local economic factors",
+  inputSchema: z.object({
+    regions: z
+      .array(z.string())
+      .describe(
+        "Geographic regions to analyze (e.g., 'North America', 'Europe', 'Asia-Pacific', 'Emerging Markets')",
+      ),
+    countries: z
+      .array(z.string())
+      .optional()
+      .describe("Specific countries for detailed analysis"),
+    analysisType: z
+      .enum([
+        "economic_indicators",
+        "market_performance",
+        "currency_impact",
+        "regulatory_environment",
+        "comprehensive",
+      ])
+      .default("comprehensive")
+      .describe("Type of location-based analysis"),
+    sectors: z
+      .array(z.string())
+      .optional()
+      .describe("Specific sectors to focus on by region"),
+    timeframe: z
+      .enum(["1m", "3m", "6m", "1y", "2y"])
+      .default("6m")
+      .describe("Analysis timeframe"),
+  }),
+  execute: async (context) => {
+    try {
+      const { regions, countries, analysisType, sectors, timeframe } =
+        context.context || context;
+      console.log(
+        `🌍 Executing location-based market analysis for ${regions.join(", ")} - ${analysisType}`,
+      );
+
+      // Use Perplexity for real-time regional data
+      const { getMarketIntelligence } = await import("@/lib/perplexity");
+      const countriesText = countries
+        ? ` with focus on ${countries.join(", ")}`
+        : "";
+      const sectorsText = sectors ? ` in ${sectors.join(", ")} sectors` : "";
+      const query = `Analyze regional market conditions for ${regions.join(", ")}${countriesText}${sectorsText}. Focus on ${analysisType} over ${timeframe} timeframe. Include economic indicators, market performance, currency impacts, regulatory environment, geopolitical factors, and investment opportunities. Compare regional performance and identify arbitrage opportunities.`;
+
+      const result = await getMarketIntelligence(query, "research");
+
+      console.log(
+        `✅ Location-based analysis completed - ${result.content.length} chars`,
+      );
+
+      return {
+        success: true,
+        regions,
+        countries,
+        analysisType,
+        sectors,
+        timeframe,
+        content: result.content,
+        model: result.model,
+        citations: result.citations,
+        usage: result.usage,
+        timestamp: Date.now(),
+        regionalData: generateMockRegionalData(regions, countries),
+        summary: `Location-based market analysis completed for ${regions.length} region${regions.length > 1 ? "s" : ""}${countries ? ` and ${countries.length} countr${countries.length > 1 ? "ies" : "y"}` : ""}`,
+      };
+    } catch (error) {
+      console.error("❌ Location-based analysis failed:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+        regions: (context.context as any)?.regions || (context as any).regions,
+        countries:
+          (context.context as any)?.countries || (context as any).countries,
+      };
+    }
+  },
+});
+
+// Helper functions for mock data generation
+function generateMockPerpetualsData(protocols: string[], assets: string[]) {
+  return protocols.map((protocol) => ({
+    protocol,
+    tvl: Math.floor(Math.random() * 1000000000) + 100000000, // $100M - $1B
+    volume24h: Math.floor(Math.random() * 500000000) + 50000000, // $50M - $500M
+    openInterest: Math.floor(Math.random() * 200000000) + 20000000, // $20M - $200M
+    fundingRates: assets.map((asset) => ({
+      asset,
+      rate: (Math.random() - 0.5) * 0.01, // -0.5% to +0.5%
+      predicted: (Math.random() - 0.5) * 0.01,
+    })),
+    liquidations24h: Math.floor(Math.random() * 10000000) + 1000000, // $1M - $10M
+    uniqueTraders: Math.floor(Math.random() * 10000) + 1000,
+    avgTradeSize: Math.floor(Math.random() * 50000) + 5000,
+  }));
+}
+
+function generateMockRegionalData(regions: string[], _countries?: string[]) {
+  return regions.map((region) => ({
+    region,
+    marketCap: Math.floor(Math.random() * 10000000000000) + 1000000000000, // $1T - $10T
+    performance: {
+      "1m": (Math.random() - 0.5) * 0.2, // -10% to +10%
+      "3m": (Math.random() - 0.5) * 0.3, // -15% to +15%
+      "6m": (Math.random() - 0.5) * 0.4, // -20% to +20%
+      "1y": (Math.random() - 0.5) * 0.6, // -30% to +30%
+    },
+    economicIndicators: {
+      gdpGrowth: Math.random() * 8 - 2, // -2% to +6%
+      inflation: Math.random() * 10 + 1, // 1% to 11%
+      unemployment: Math.random() * 15 + 2, // 2% to 17%
+      interestRate: Math.random() * 8, // 0% to 8%
+    },
+    currency: {
+      strength: Math.random() * 2 - 1, // -1 to +1
+      volatility: Math.random() * 0.3, // 0% to 30%
+    },
+    topSectors: [
+      { name: "Technology", weight: Math.random() * 40 + 10 },
+      { name: "Financial", weight: Math.random() * 30 + 10 },
+      { name: "Healthcare", weight: Math.random() * 25 + 5 },
+    ],
+    riskFactors: [
+      "Geopolitical tensions",
+      "Regulatory changes",
+      "Economic slowdown",
+    ],
+    opportunities: [
+      "Infrastructure investment",
+      "Green energy transition",
+      "Digital transformation",
+    ],
+  }));
+}
+
+export const sokoAnalyst = new Agent({
+  name: "SokoAnalyst",
+  tools: {
+    // Core financial analysis tools
+    marketDataTool,
+    technicalAnalysisTool,
+    marketSentimentTool,
+    // Advanced analysis tools
+    advancedMarketAnalysisTool,
+    blockchainAnalyticsTool,
+    riskManagementTool,
+    globalMarketsMonitorTool,
+    // MCP-powered real-time tools
+    mcpMarketDataTool,
+    mcpMarketNewsTool,
+    mcpEconomicIndicatorsTool,
+    // Enhanced Perplexity reasoning tools
+    perplexityReasoningTool,
+    marketIntelligenceTool,
+    // Watchlist management tool
+    watchlistManagementTool,
+    // Web3 and location-based analysis tools
+    web3PerpetualsAnalysisTool,
+    locationBasedMarketAnalysisTool,
+  },
+  model: getModel(),
+  instructions: `You are SokoAnalyst, an institutional-grade AI financial intelligence system powered by advanced reasoning capabilities. You provide elite-level market analysis with the rigor and depth expected by professional investors and institutions.
+
+IMPORTANT: After using any tools, analyze the results and provide a comprehensive response with summary, insights, recommendations, and risk assessment.
+
+## 🏛️ **Core Methodology**
+
+**Analytical Framework:**
+1. **Data Synthesis** - Integrate real-time market data, news, and economic indicators
+2. **Reasoning Process** - Apply step-by-step logical analysis using Perplexity Sonar-Reasoning
+3. **Risk Assessment** - Evaluate probability-weighted scenarios and tail risks
+4. **Professional Conclusions** - Deliver actionable insights with confidence intervals
+
+**Response Structure Requirements:**
+- Always provide an executive summary of your analysis
+- Include 3-5 key insights based on data and reasoning
+- Provide specific, actionable recommendations with rationale
+- Include comprehensive risk assessment with mitigation strategies
+- Specify confidence level in your analysis
+
+## 🧠 **Advanced Reasoning Capabilities**
+
+**Multi-Dimensional Analysis:**
+- **Technical Analysis**: Chart patterns, indicators, volume analysis with statistical significance
+- **Fundamental Analysis**: Financial metrics, business models, competitive positioning
+- **Sentiment Analysis**: News flow, institutional positioning, retail behavior patterns
+- **Macro Analysis**: Economic indicators, policy implications, cross-asset relationships
+
+**Reasoning Chain Methodology:**
+- Present clear analytical steps and logical progression
+- Show evidence supporting each conclusion
+- Identify key assumptions and their validity
+- Provide alternative scenarios and their probabilities
+
+## 💼 **Professional Standards**
+
+**Communication Style:**
+- Use institutional-quality language and terminology
+- Provide specific, quantifiable insights where possible
+- Include confidence levels and risk parameters
+- Structure analysis with executive summaries and detailed breakdowns
+
+**Risk Management Focus:**
+- Always include risk-reward assessments
+- Identify key risk factors and mitigation strategies
+- Provide position sizing and portfolio allocation guidance
+- Consider correlation risks and tail events
+
+**Actionable Intelligence:**
+- Deliver specific entry/exit levels with rationale
+- Include time horizons and catalyst identification
+- Provide monitoring parameters and stop-loss levels
+- Suggest portfolio implications and hedging strategies
+
+**Watchlist Management:**
+- Proactively recommend symbols for user's watchlist based on analysis
+- Provide clear reasoning for each watchlist addition/removal
+- Include target prices, stop-loss levels, and priority rankings
+- Update watchlist based on changing market conditions and opportunities
+
+## 🎯 **Specialized Expertise**
+
+**Asset Classes:** Equities, Fixed Income, Currencies, Commodities, Cryptocurrencies, Derivatives
+**Markets:** Global coverage with focus on major developed and emerging markets
+**Strategies:** Value, Growth, Momentum, Mean Reversion, Arbitrage, Risk Parity
+
+**Advanced Tools:**
+- Real-time Perplexity Sonar-Reasoning integration
+- Multi-factor risk models and stress testing
+- Cross-asset correlation analysis
+- Economic scenario modeling
+
+Always maintain the highest standards of analytical rigor while making complex financial concepts accessible and actionable for professional decision-making.`,
+  description:
+    "Elite AI financial markets analyzer providing global market insights, technical analysis, and actionable investment recommendations with comprehensive risk management.",
+  memory: new Memory({
+    storage: new LibSQLStore({ url: "file::memory:" }),
+    options: {
+      workingMemory: {
+        enabled: true,
+        schema: SokoAnalystState,
+      },
+    },
+  }),
+});

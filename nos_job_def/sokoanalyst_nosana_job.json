@@ -1,0 +1,62 @@
+{
+  "version": "1.0",
+  "type": "container",
+  "meta": {
+    "trigger": "cli",
+    "name": "SokoAnalyst Financial Intelligence Platform",
+    "description": "Advanced AI-powered financial markets analyzer with real-time MCP data integration"
+  },
+  "spec": {
+    "image": "yourusername/sokoanalyst:latest",
+    "gpu": "any",
+    "resources": {
+      "cpu": 2,
+      "memory": "8Gi",
+      "gpu": 1
+    },
+    "expose": [
+      {
+        "port": 3000,
+        "as": 80,
+        "to": ["0.0.0.0/0"]
+      }
+    ],
+    "env": [
+      {
+        "name": "NODE_ENV",
+        "value": "production"
+      },
+      {
+        "name": "OLLAMA_API_URL",
+        "value": "http://localhost:11434"
+      },
+      {
+        "name": "MODEL_NAME_AT_ENDPOINT",
+        "value": "qwen3:8b"
+      },
+      {
+        "name": "LOG_LEVEL",
+        "value": "info"
+      }
+    ],
+    "volumes": [
+      {
+        "name": "ollama-models",
+        "path": "/root/.ollama"
+      }
+    ],
+    "init": [
+      {
+        "name": "setup-ollama",
+        "image": "ollama/ollama:latest",
+        "command": ["ollama", "pull", "qwen3:8b"]
+      }
+    ]
+  },
+  "pricing": {
+    "type": "fixed",
+    "amount": "0.1"
+  },
+  "timeout": 3600,
+  "retries": 2
+}
