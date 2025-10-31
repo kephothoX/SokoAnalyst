@@ -471,4 +471,9 @@ For support, feature requests, or bug reports:
 
 **SokoAnalyst** - Empowering traders and investors with AI-driven market intelligence and actionable insights across global financial markets.
 
+
+
+
+## [Docker Image](https://hub.docker.com/repository/docker/kephotho/agent-challenge)
+
 _Built with ❤️ using Mastra AI and deployed on the Nosana decentralized compute network._
