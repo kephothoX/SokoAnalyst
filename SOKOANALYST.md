@@ -476,4 +476,8 @@ For support, feature requests, or bug reports:
 
 ## [Docker Image](https://hub.docker.com/repository/docker/kephotho/agent-challenge)
 
+## ![Agent on Nosana Dashboardb Demo](https://youtu.be/Kr66N4cg5-c)
+
+## ![SokoAnalyst Demo Video](https://youtu.be/ewwvnlxMf1o)
+
 _Built with ❤️ using Mastra AI and deployed on the Nosana decentralized compute network._
