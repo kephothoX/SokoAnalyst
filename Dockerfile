@@ -37,7 +37,7 @@ RUN --mount=type=cache,target=/pnpm/store \
 COPY package.json ./
 
 RUN --mount=type=cache,target=/pnpm/store \
-  pnpm install --frozen-lockfile --offline
+  pnpm install --no-frozen-lockfile
 
 COPY . .
 
@@ -132,4 +132,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
   CMD curl -f http://localhost:8080/health || exit 1
 
 # Start SokoAnalyst with all services
-ENTRYPOINT ["/app/start-soko.sh"]
+ENTRYPOINT ["npm", "start"]
